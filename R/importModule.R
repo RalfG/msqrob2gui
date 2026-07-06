@@ -24,8 +24,10 @@ importUI <- function(id="import")
                tags$label("Software", `for`="software"),
                selectInput(NS(id, "software"), label = NULL,
                            choices = c("DIA-NN"      = "diann",
+                                       "DIA-NN (protein groups)" = "diann_pg",
                                        "Spectronaut" = "spectronaut",
-                                       "Max-Quant" = "maxquant",
+                                       "Max-Quant (peptides)" = "maxquant",
+                                       "Max-Quant (protein groups)" = "maxquant_pg",
                                        "Other" = "other"),
                            selected = "diann"
                            ),
@@ -144,6 +146,12 @@ importServer <- function(id="import", variables){
       
       
       
+      # Track the software selection each of the two blocks below last rendered
+      # for, so a software change can force its defaults even when the old pick
+      # happens to also be a valid column name in the (possibly unchanged) file.
+      prevSoftwareForColumns <- reactiveVal(NULL)
+      prevSoftwareForQuant   <- reactiveVal(NULL)
+
       # select columns (feature ID + run column only — must NOT depend on
       # input$runCol/input$fnames themselves, or picking a value here would
       # immediately rebuild and reset this very block)
@@ -154,20 +162,30 @@ importServer <- function(id="import", variables){
 
         cfg <- switch(input$software,
                       diann = list(fnames = "Precursor.Id",   runCol = "Run"),
+                      diann_pg = list(fnames = "Protein.Group", runCol = NULL),
                       spectronaut = list(fnames = "EG_PrecursorId", runCol = "R_FileName"),
                       maxquant = list(fnames = "Sequence",     runCol = NULL),
+                      maxquant_pg = list(fnames = "Protein.IDs", runCol = NULL),
                       other = list(fnames = NULL, runCol = NULL)
         )
 
-        # Preserve the user's current picks across re-renders (e.g. a software
-        # change) as long as they're still valid columns in this file; otherwise
-        # fall back to the software-specific default. isolate() so that reading
+        # Preserve the user's current picks across re-renders (e.g. a new file
+        # for the same software) as long as they're still valid columns in this
+        # file; but force the software's own default whenever the software
+        # selection itself just changed, even if the old pick happens to also
+        # be a valid column name in this file. isolate() so that reading
         # input$fnames/input$runCol here does not itself retrigger this block.
+        softwareChanged <- isolate(!identical(prevSoftwareForColumns(), input$software))
+
         fnamesSelected <- isolate({
-          if (!is.null(input$fnames) && input$fnames %in% cols) input$fnames else cfg$fnames
+          if (!softwareChanged && !is.null(input$fnames) && input$fnames %in% cols) {
+            input$fnames
+          } else {
+            cfg$fnames
+          }
         })
         runColSelected <- isolate({
-          if (!is.null(input$runCol) && input$runCol %in% c("None", cols)) {
+          if (!softwareChanged && !is.null(input$runCol) && input$runCol %in% c("None", cols)) {
             input$runCol
           } else if (!is.null(cfg$runCol)) {
             cfg$runCol
@@ -175,6 +193,18 @@ importServer <- function(id="import", variables){
             "None"
           }
         })
+
+        # Only treat the software change as "consumed" once its default was
+        # actually realisable against this file's columns (i.e. is among the
+        # choices being rendered below). If the software was switched before
+        # the matching file was uploaded, the default can't be selected yet
+        # (the widget would silently fall back to its first choice) — so keep
+        # retrying on the next re-render instead of losing track of the change.
+        appliedCleanly <- isolate({
+          (is.null(cfg$fnames) || cfg$fnames %in% cols) &&
+            (is.null(cfg$runCol) || cfg$runCol %in% cols)
+        })
+        if (!softwareChanged || appliedCleanly) isolate(prevSoftwareForColumns(input$software))
 
         list(
           tags$label("Column selection"),
@@ -195,21 +225,35 @@ importServer <- function(id="import", variables){
 
         cfg <- switch(input$software,
                       diann = list(quantCol = "Precursor.Quantity"),
+                      diann_pg = list(quantCol = setdiff(cols, c("Protein.Group", "Protein.Ids",
+                                                                 "Protein.Names", "Genes",
+                                                                 "First.Protein.Description",
+                                                                 "N.Sequences",
+                                                                 "N.Proteotypic.Sequences"))),
                       spectronaut = list(quantCol = "FG_MS2RawQuantity"),
                       maxquant = list(quantCol = grep("Intensity.", cols, value = TRUE)),
+                      maxquant_pg = list(quantCol = grep("^LFQ.intensity", cols, value = TRUE)),
                       other = list(quantCol = NULL)
         )
 
+        softwareChanged <- isolate(!identical(prevSoftwareForQuant(), input$software))
+
         isLong <- !is.null(input$runCol) && input$runCol != "None"
+
+        # As above: only consume the software change once cfg$quantCol is
+        # actually realisable against this file's columns; otherwise retry on
+        # the next re-render (e.g. once the matching file is uploaded).
+        appliedCleanly <- isolate(is.null(cfg$quantCol) || all(cfg$quantCol %in% cols))
+        if (!softwareChanged || appliedCleanly) isolate(prevSoftwareForQuant(input$software))
 
         if (isLong) {
           selectizeInput(NS(id, "quantCol"), "Intensity column",
                          choices = cols,
-                         selected = if (!is.null(input$quantCol) && input$quantCol %in% cols) input$quantCol else cfg$quantCol)
+                         selected = if (!softwareChanged && !is.null(input$quantCol) && input$quantCol %in% cols) input$quantCol else cfg$quantCol)
         } else {
           selectizeInput(NS(id, "quantCols"), "Intensity columns",
                          choices = cols,
-                         selected = if (!is.null(input$quantCols) && all(input$quantCols %in% cols)) input$quantCols else cfg$quantCol,
+                         selected = if (!softwareChanged && !is.null(input$quantCols) && all(input$quantCols %in% cols)) input$quantCols else cfg$quantCol,
                          multiple = TRUE)
         }
       })
@@ -225,9 +269,9 @@ importServer <- function(id="import", variables){
       })
       
       
-      #name input summarized experiment, only showing for maxquant and other
+      #name input summarized experiment, only showing for wide-format imports
       output$nameInput <- renderUI({
-        if (input$software %in% c("maxquant", "other")) {
+        if (input$software %in% c("maxquant", "other", "diann_pg", "maxquant_pg")) {
           div(list(
             tags$label("Set name"),
             textInput(NS(id, "name"), label = NULL, value = "quants_initial"),

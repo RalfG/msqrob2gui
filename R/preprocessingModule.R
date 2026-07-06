@@ -228,6 +228,12 @@ preprocessingServer <- function(id = "preprocessing", variables) {
       paste(sapply(names(qf), function(n) paste0(n, ": ", nrow(qf[[n]]), " features")), collapse = " | ")
     }
 
+    # Track the software each of output$join/output$aggregation last rendered
+    # for, so a software change can force their defaults even when the old
+    # pick happens to also be valid for the newly (re)built QFeatures object.
+    prevSoftwareForJoin        <- reactiveVal(NULL)
+    prevSoftwareForAggregation <- reactiveVal(NULL)
+
     # ---- Default filters ----
     filterList <- reactiveVal(list())
 
@@ -258,6 +264,16 @@ preprocessingServer <- function(id = "preprocessing", variables) {
           }
           mq_filters
         },
+        "maxquant_pg" = {
+          mq_pg_filters <- list("Reverse != '+'", "Only.identified.by.site != '+'")
+          if (!is.null(variables$qfeatures)) {
+            rd_cols    <- colnames(SummarizedExperiment::rowData(variables$qfeatures[[1]]))
+            contam_col <- rd_cols[grepl("contaminant", rd_cols, ignore.case = TRUE)][1]
+            if (!is.na(contam_col)) mq_pg_filters <- c(mq_pg_filters, list(paste0(contam_col, " != '+'")))
+          }
+          mq_pg_filters
+        },
+        "diann_pg"    = list(),
         "other"       = list(),
         list()
       ))
@@ -311,6 +327,37 @@ preprocessingServer <- function(id = "preprocessing", variables) {
           variables$nameNormAssayDefault     <- "quants_norm"
           variables$aggrMethodDefault        <- "maxLFQ"
           variables$aggrColDefault           <- NULL
+          variables$nameAggrAssayDefault     <- "proteins"
+          variables$nameFilterNA2AssayDefault <- "proteins_filter_na"
+          variables$nprecDefault             <- 1
+        },
+        "diann_pg" = {
+          # Protein-groups report is already protein-level and pre-filtered by
+          # DIA-NN, so no default filters/normalisation/aggregation are applied.
+          variables$fColDefault              <- "Protein.Group"
+          variables$nameAssayDefault         <- "quants"
+          variables$nameFilterNAAssayDefault <- "quants_filter_na"
+          variables$nameLogAssayDefault      <- "quants_log"
+          variables$normMethodDefault        <- "None"
+          variables$nameNormAssayDefault     <- "quants_norm"
+          variables$aggrMethodDefault        <- "None"
+          variables$aggrColDefault           <- "Protein.Group"
+          variables$nameAggrAssayDefault     <- "proteins"
+          variables$nameFilterNA2AssayDefault <- "proteins_filter_na"
+          variables$nprecDefault             <- 1
+        },
+        "maxquant_pg" = {
+          # Protein-groups report is already protein-level, so no default
+          # normalisation/aggregation are applied — only the standard
+          # Reverse / contaminant / identified-by-site quality filters.
+          variables$fColDefault              <- "Protein.IDs"
+          variables$nameAssayDefault         <- "quants"
+          variables$nameFilterNAAssayDefault <- "quants_filter_na"
+          variables$nameLogAssayDefault      <- "quants_log"
+          variables$normMethodDefault        <- "None"
+          variables$nameNormAssayDefault     <- "quants_norm"
+          variables$aggrMethodDefault        <- "None"
+          variables$aggrColDefault           <- "Protein.IDs"
           variables$nameAggrAssayDefault     <- "proteins"
           variables$nameFilterNA2AssayDefault <- "proteins_filter_na"
           variables$nprecDefault             <- 1
@@ -400,11 +447,33 @@ preprocessingServer <- function(id = "preprocessing", variables) {
       if (length(names(variables$qfeatures)) <= 1) return(NULL)
       rd <- SummarizedExperiment::rowData(variables$qfeatures[[1]])
       rdCols <- colnames(rd)
+
+      # Preserve the user's current picks across re-renders (e.g. a new file
+      # for the same software) as long as they're still valid; but force the
+      # software's own default whenever the software itself just changed, only
+      # marking the change "consumed" once that default is actually realisable
+      # against this QFeatures object's columns (mirrors the import-tab fix).
+      softwareChanged <- isolate(!identical(prevSoftwareForJoin(), variables$software))
+
+      fColSelected <- isolate({
+        if (!softwareChanged && !is.null(input$fCol) && input$fCol %in% rdCols) {
+          input$fCol
+        } else {
+          variables$fColDefault
+        }
+      })
+      nameAssaySelected <- isolate({
+        if (!softwareChanged && !is.null(input$nameAssay)) input$nameAssay else variables$nameAssayDefault
+      })
+
+      appliedCleanly <- isolate(is.null(variables$fColDefault) || variables$fColDefault %in% rdCols)
+      if (!softwareChanged || appliedCleanly) isolate(prevSoftwareForJoin(variables$software))
+
       list(
         tags$label("Join assays"),
         fluidRow(style = "display: flex; align-items: flex-end; gap: 10px;",
-          column(3, selectizeInput(NS(id, "fCol"), "Column", choices = rdCols, selected = if (!is.null(input$fCol) && input$fCol %in% rdCols) input$fCol else variables$fColDefault)),
-          column(3, textInput(NS(id, "nameAssay"), "Name", value = if (!is.null(input$nameAssay)) input$nameAssay else variables$nameAssayDefault)),
+          column(3, selectizeInput(NS(id, "fCol"), "Column", choices = rdCols, selected = fColSelected)),
+          column(3, textInput(NS(id, "nameAssay"), "Name", value = nameAssaySelected)),
           column(2, tags$label(HTML("&nbsp;")), actionButton(NS(id, "test_join"), "Test", class = "btn-primary", style = "display: block;"))
         ),
         helpText("Joins multiple assays into a single assay.")
@@ -543,18 +612,52 @@ preprocessingServer <- function(id = "preprocessing", variables) {
       req(variables$qfeatures)
       rd <- SummarizedExperiment::rowData(variables$qfeatures[[1]])
       rdCols <- colnames(rd)
+
+      # Preserve the user's current picks across re-renders (e.g. a new file
+      # for the same software) as long as they're still valid; but force the
+      # software's own default whenever the software itself just changed, only
+      # marking the change "consumed" once that default is actually realisable
+      # against this QFeatures object's columns (mirrors the import-tab fix).
+      softwareChanged <- isolate(!identical(prevSoftwareForAggregation(), variables$software))
+
+      aggrMethodSelected <- isolate({
+        if (!softwareChanged && !is.null(input$aggrMethod)) input$aggrMethod else variables$aggrMethodDefault
+      })
+      nameAggrAssaySelected <- isolate({
+        if (!softwareChanged && !is.null(input$nameAggrAssay)) input$nameAggrAssay else variables$nameAggrAssayDefault
+      })
+      aggrColSelected <- isolate({
+        if (!softwareChanged && !is.null(input$aggrCol) && input$aggrCol %in% rdCols) {
+          input$aggrCol
+        } else {
+          variables$aggrColDefault
+        }
+      })
+      nprecFilterSelected <- isolate({
+        if (!softwareChanged && !is.null(input$nprecFilter)) {
+          input$nprecFilter
+        } else if (!is.null(variables$nprecDefault)) {
+          variables$nprecDefault
+        } else {
+          1
+        }
+      })
+
+      appliedCleanly <- isolate(is.null(variables$aggrColDefault) || variables$aggrColDefault %in% rdCols)
+      if (!softwareChanged || appliedCleanly) isolate(prevSoftwareForAggregation(variables$software))
+
       list(
         tags$label("Aggregation"),
         fluidRow(style = "display: flex; align-items: flex-end; gap: 10px;",
           column(3, selectInput(NS(id, "aggrMethod"), "Method",
                                 choices = c("None", "medianPolish", "robustSummary", "colMeans",
                                             "colMedians", "colSums", "maxLFQ"),
-                                selected = if (!is.null(input$aggrMethod)) input$aggrMethod else variables$aggrMethodDefault)),
-          column(3, textInput(NS(id, "nameAggrAssay"), "Name", value = if (!is.null(input$nameAggrAssay)) input$nameAggrAssay else variables$nameAggrAssayDefault))
+                                selected = aggrMethodSelected)),
+          column(3, textInput(NS(id, "nameAggrAssay"), "Name", value = nameAggrAssaySelected))
         ),
         fluidRow(style = "display: flex; align-items: flex-end; gap: 10px;",
-          column(3, selectizeInput(NS(id, "aggrCol"), "Aggregation column", choices = rdCols, selected = if (!is.null(input$aggrCol) && input$aggrCol %in% rdCols) input$aggrCol else variables$aggrColDefault)),
-          column(2, numericInput(NS(id, "nprecFilter"), "N-peptides rule", value = if (!is.null(input$nprecFilter)) input$nprecFilter else if (!is.null(variables$nprecDefault)) variables$nprecDefault else 1, min = 1)),
+          column(3, selectizeInput(NS(id, "aggrCol"), "Aggregation column", choices = rdCols, selected = aggrColSelected)),
+          column(2, numericInput(NS(id, "nprecFilter"), "N-peptides rule", value = nprecFilterSelected, min = 1)),
           column(2, tags$label(HTML("&nbsp;")), actionButton(NS(id, "test_aggr"), "Test", class = "btn-primary", style = "display: block;"))
         )
       )
