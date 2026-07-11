@@ -63,6 +63,17 @@ altSEEExploreServer <- function(id = "explore", variables) {
 
     rv <- reactiveValues(isee_proc = NULL, isee_polling = FALSE, isee_url = NULL)
 
+    # Kill the background iSEE process when this session ends (e.g. browser
+    # tab closed), so it doesn't linger as an orphan. `supervise = TRUE` on
+    # the callr::r_bg() call below is a safety net for cases that bypass
+    # this handler, e.g. the R process crashing or being force-quit.
+    session$onSessionEnded(function() {
+      proc <- shiny::isolate(rv$isee_proc)
+      if (!is.null(proc)) {
+        try(proc$kill(), silent = TRUE)
+      }
+    })
+
     output$selectAssay <- renderUI({
       req(variables$qfeatures)
       selectInput(session$ns("selectedAssay"), label = NULL,
@@ -163,7 +174,7 @@ altSEEExploreServer <- function(id = "explore", variables) {
           shiny::runApp(app, port = port, host = "127.0.0.1", launch.browser = FALSE)
         },
         args      = list(tmp = tmp, port = isee_port),
-        supervise = FALSE
+        supervise = TRUE
       )
 
       rv$isee_proc    <- proc
