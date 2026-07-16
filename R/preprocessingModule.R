@@ -404,6 +404,7 @@ preprocessingServer <- function(id = "preprocessing", variables) {
         uiOutput(NS(id, "FilterList")),
         fluidRow(style = "margin-top: 5px;",
           column(2, actionButton(NS(id, "addFilter"), "Add")),
+          column(3, actionButton(NS(id, "removeLastFilter"), "Remove last filter")),
           column(3, actionButton(NS(id, "clearFilters"), "Clear all filters"))
         )
       )
@@ -419,6 +420,11 @@ preprocessingServer <- function(id = "preprocessing", variables) {
       filters <- filterList()
       if (length(filters) == 0) return(NULL)
       tags$ul(lapply(filters, function(f) tags$li(f)))
+    })
+
+    observeEvent(input$removeLastFilter, {
+      filters <- filterList()
+      if (length(filters) > 0) filterList(filters[-length(filters)])
     })
 
     observeEvent(input$clearFilters, { filterList(list()) })

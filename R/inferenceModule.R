@@ -49,6 +49,7 @@ inferenceUI <- function(id="inference")
                           ),
                  uiOutput(NS(id, "contrastListUI")),
                  fluidRow(
+                   column(4, actionButton(NS(id, "removeLastContrast"), "Remove last contrast")),
                    column(4, actionButton(NS(id, "clearContrasts"), "Clear all contrasts", class = "btn-primary")),
                    column(4, actionButton(NS(id, "runContrasts"), "Test all contrasts", class = "btn-success"))
                  ),
@@ -172,6 +173,11 @@ inferenceServer <- function(id="inference", variables, importServerInput){
         tags$ul(
           lapply(contrasts, function(f) tags$li(f))
         )
+      })
+
+      observeEvent(input$removeLastContrast, {
+        contrasts <- contrastList()
+        if (length(contrasts) > 0) contrastList(contrasts[-length(contrasts)])
       })
 
       observeEvent(input$clearContrasts, {
