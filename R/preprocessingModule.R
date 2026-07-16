@@ -675,7 +675,9 @@ preprocessingServer <- function(id = "preprocessing", variables) {
       req(variables$qf_tmp, aggrInput, input$aggrCol, input$nameAggrAssay, input$nprecFilter)
       variables$qf_tmp <- try({
         aggFun <- if (input$aggrMethod == "maxLFQ") {
-          function(X) iq::maxLFQ(X)$estimate
+          function(X, ...) iq::process_matrix(X,
+                                              method    = "maxlfq"
+                                              )
         } else {
           switch(input$aggrMethod,
             "medianPolish"  = function(X) MsCoreUtils::medianPolish(X, na.rm = TRUE),
